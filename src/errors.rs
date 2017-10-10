@@ -46,6 +46,10 @@ error_chain! {
             description("Network connection to server ended unexpectedly")
         }
 
+        NotConnected {
+            description("Network connection to server ended unexpectedly")
+        }
+
         InvalidTopicFilter {
             description("Topic filter has invalid syntax")
         }

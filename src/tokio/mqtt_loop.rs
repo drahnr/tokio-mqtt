@@ -241,6 +241,7 @@ pub struct Loop<'p, I, P>
 
 impl<'p, I, P> Loop<'p, I, P> where I: AsyncRead + AsyncWrite + 'static,
     P: 'p + Persistence {
+
     pub fn new(io: I, persist: &'p mut P, handle: Handle, keep_alive: u64, connect_timeout: u64) -> Result<(Loop<'p, I, P>, LoopClient)> {
         let (tx, rx) = unbounded::<ClientRequest>();
         let (fwrite, fread) = io.framed(MqttCodec).split();
@@ -291,237 +292,258 @@ impl<'p, I, P> Loop<'p, I, P> where I: AsyncRead + AsyncWrite + 'static,
             SourceError::Timeout(e.into())
         }).boxed()
     }
+
+
+    fn poll_got_request(&mut self, queue : &mut ClientQueue, request : Option<ClientRequest>) -> Poll<(), ()> {
+        let mut current_state = &mut self.status;
+        match *current_state {
+            LoopStatus::Connected => {
+                use super::ClientRequestType::*;
+
+                match request {
+                    Some(ClientRequest{ty: Normal(packet), ack, ret}) => {
+                        match queue.peek() {
+                            Ok(Async::Ready(Some(_))) => self.timer_flag = None,
+                            Ok(Async::Ready(None)) | Ok(Async::NotReady) => {
+                                // Set the timeout flag
+                                let id = self.timer_flag.take()
+                                    .map(|t| t + 1).unwrap_or(0);
+                                self.timer_flag = Some(id);
+                                // Make the timeout
+                                let timeout = Timeout::new(
+                                    Duration::from_secs(self.keep_alive),
+                                    &self.handle).ok();
+                                if let Some(timer) = timeout {
+                                    let timeout_fut = Loop::<I,P>::make_timeout(
+                                        timer, TimeoutType::Ping(id));
+                                    self.sources.push(timeout_fut);
+                                }
+                            },
+                            _ => {}
+                        }
+                        let (tx, rx) = channel::<Result<ClientReturn>>();
+                        self.sources.push(Box::new(RequestProcessor::new(
+                            (tx, rx),
+                            self.data.clone())));
+                       // FIXME
+                       // self.sources.push(Box::new(RequestProcessor::new(
+                       //     (packet, return_chan),
+                       //     self.data.clone())));
+                       // let _ = inital_ret.send(Ok(()));
+                        *current_state = LoopStatus::Connected;
+                    },
+                    Some(ClientRequest{ty: Disconnect(time), ret, ack}) => {
+                       // Start a timeout for the disconnect
+                        let hdl = self.handle.clone();
+                        let timeout = time.and_then(|t| {
+                            Timeout::new(Duration::from_secs(t), &hdl).ok()
+                        });
+                        if let Some(timer) = timeout {
+                            let timeout_fut = Loop::<I,P>::make_timeout(timer,
+                                TimeoutType::Disconnect);
+                            self.sources.push(timeout_fut);
+                           // Move state to Disconnecting
+                            *current_state = LoopStatus::Disconnecting(
+                                DisconnectState::Waiting, ret);
+                        } else {
+                            *current_state = LoopStatus::Disconnecting(
+                                DisconnectState::Sending, ret);
+                        }
+                    },
+                    Some(ClientRequest{ty: _, ret, ack}) => {
+                        let _ = ack.send(
+                            Err(ErrorKind::LoopStateError.into()));
+                        return Ok(Async::Ready(()));
+                    },
+                    None => {
+                        *current_state = LoopStatus::PendingError(
+                            ErrorKind::LoopCommsError.into());
+                    }
+                }
+            },
+            LoopStatus::PendingError(_) => {
+                let e = match mem::replace(current_state, LoopStatus::Done) {
+                    LoopStatus::PendingError(e) => e,
+                    _ => unreachable!()
+                };
+                if let Some(req) = request {
+                    let _ = req.ack.send(Err(e));
+                }
+                return Ok(Async::Ready(()));
+            },
+            _ => unreachable!()
+        };
+        Ok(Async::NotReady)
+    }
+
+    fn poll_queues(&mut self, res : &mut SourceItem<I>) -> Poll<(), ()> {
+        match res {
+            &mut SourceItem::GotRequest(mut queue, request) => {
+                self.poll_got_request(&mut queue, request)
+            },
+            &mut SourceItem::ProcessRequest(sent, more) => {
+                self.inflight = more;
+             // Set the timeout flag
+                let id = self.timer_flag.take().map(|t| t + 1).unwrap_or(0);
+                self.timer_flag = Some(id);
+             // Make the timeout
+                let timeout = Timeout::new(Duration::from_secs(self.keep_alive),
+                    &self.handle).ok();
+                if let Some(timer) = timeout {
+                    let timeout_fut = Loop::<I,P>::make_timeout(timer, TimeoutType::Ping(id));
+                    self.sources.push(timeout_fut);
+                }
+            },
+            &mut SourceItem::GotResponse(strm, packet) => {
+                let mut current_state = &mut self.status;
+                match current_state {
+                    &mut LoopStatus::Connected | &mut LoopStatus::Disconnecting(_, _) => {
+                        if let Some(p) = packet {
+                            self.sources.push(Loop::<I, P>::response_wrapper(strm));
+                            self.sources.push(Box::new(ResponseProcessor::new(p,
+                                self.data.clone())));
+                        } else {
+                            *current_state = LoopStatus::PendingError(
+                                ErrorKind::UnexpectedDisconnect.into())
+                        }
+                    },
+                    _ => unreachable!()
+                }
+            },
+            &mut SourceItem::ProcessResponse(sent, work) => {
+                let current_state = &mut self.status;
+                match current_state {
+                    &mut LoopStatus::Connected => {
+                        self.inflight = work;
+                        if sent {
+                            self.timer_flag = None;
+                        } else {
+                            // Set the timeout flag
+                            let id = self.timer_flag.take().map(|t| t + 1).unwrap_or(0);
+                            self.timer_flag = Some(id);
+                            // Make the timeout
+                            let timeout = Timeout::new(Duration::from_secs(self.keep_alive),
+                                &self.handle).ok();
+                            if let Some(timer) = timeout {
+                                let timeout_fut = Loop::<I,P>::make_timeout(timer, TimeoutType::Ping(id));
+                                self.sources.push(timeout_fut);
+                            }
+                        }
+                    },
+                    &mut LoopStatus::Disconnecting(ref mut state, ret) => {
+                        // Have we finished our work?
+                        match *state {
+                            DisconnectState::Waiting => {
+                                if work {
+                                    if sent {
+                                        self.timer_flag = None;
+                                    } else {
+                                        // Set the timeout flag
+                                        let id = self.timer_flag.take().map(|t| t + 1).unwrap_or(0);
+                                        self.timer_flag = Some(id);
+                                        // Make the timeout
+                                        let timeout = Timeout::new(Duration::from_secs(self.keep_alive),
+                                            &self.handle).ok();
+                                        if let Some(timer) = timeout {
+                                            let timeout_fut = Loop::<I,P>::make_timeout(timer, TimeoutType::Ping(id));
+                                            self.sources.push(timeout_fut);
+                                        }
+                                    }
+                                } else {
+                                    *state = DisconnectState::Sending;
+                                }
+                            },
+                            DisconnectState::Sending => {
+                                // FIXME
+                                *state = DisconnectState::Closing;
+                            },
+                            DisconnectState::Closing => {
+                                // FIXME terminate sockets
+                            },
+                        }
+                    },
+                    _ => unreachable!()
+                }
+            },
+            &mut SourceItem::Timeout(t) => {
+                match t {
+                    TimeoutType::Connect => {
+                        let mut current_state = &mut self.status;
+                        match *current_state {
+                            LoopStatus::Connecting(_) => {
+                                *current_state = LoopStatus::PendingError(
+                                    ProtoErrorKind::ResponseTimeout(
+                                        PacketType::Connect
+                                    ).into()
+                                );
+                            },
+                            _ => {}
+                        }
+                    }
+                    TimeoutType::Ping(id) => {
+                        // Send a ping request if this timer is valid
+                        if let Some(x) = self.timer_flag {
+                            if x == id {
+                                let req = MqttPacket::ping_req_packet();
+                                let (tx, rx) = channel::<Result<ClientReturn>>();
+                                self.sources.push(Box::new(RequestProcessor::new((req, tx),
+                                    self.data.clone())));
+                                self.sources.push(rx
+                                    .map(|_| SourceItem::GotPingResponse)
+                                    .map_err(|_| SourceError::GotPingResponse).boxed()
+                                );
+                                self.timer_flag = None;
+                            }
+                        }
+                    },
+                    TimeoutType::Disconnect => {
+                        // Shutdown all the queue stuff
+                    }
+                }
+            },
+            &mut SourceItem::GotPingResponse => {
+                // Set the timeout flag
+                let id = self.timer_flag.take().map(|t| t + 1).unwrap_or(0);
+                self.timer_flag = Some(id);
+                // Make the timeout
+                let timeout = Timeout::new(Duration::from_secs(self.keep_alive),
+                    &self.handle).ok();
+                if let Some(timer) = timeout {
+                    let timeout_fut = Loop::<I,P>::make_timeout(timer, TimeoutType::Ping(id));
+                    self.sources.push(timeout_fut);
+                }
+            }
+        }
+        Ok(Async::NotReady)
+    }
 }
 
-// impl<'p, I, P> Future for Loop<'p, I, P> where I: AsyncRead + AsyncWrite + 'static,
-//     P: 'p + Persistence, 'p: 'static {
-//     type Item = ();
-//     type Error = ();
-//
-//     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-//         loop {
-//             if let LoopStatus::Done = self.status {
-//                 return Ok(Async::Ready(()))
-//             }
-//
-//             let res = match self.sources.poll() {
-//                 Ok(Async::NotReady) => return Ok(Async::NotReady),
-//                 Ok(Async::Ready(r)) => r,
-//                 Err(e) => {
-//                     // Close the connection to the server
-//                     self.status = LoopStatus::PendingError(e.into());
-//                     continue;
-//                 }
-//             };
-//             match res {
-//                 Some(SourceItem::GotRequest(mut queue, request)) => {
-//                     let mut current_state = &mut self.status;
-//                     match *current_state {
-//                         LoopStatus::Connected => {
-//                             use super::ClientRequestType::*;
-//
-//                             match request {
-//                                 Some(ClientRequest{ty: Normal(packet), ack, ret}) => {
-//                                     match queue.peek() {
-//                                         Ok(Async::Ready(Some(_))) => self.timer_flag = None,
-//                                         Ok(Async::Ready(None)) | Ok(Async::NotReady) => {
-//                                             // Set the timeout flag
-//                                             let id = self.timer_flag.take()
-//                                                 .map(|t| t + 1).unwrap_or(0);
-//                                             self.timer_flag = Some(id);
-//                                             // Make the timeout
-//                                             let timeout = Timeout::new(
-//                                                 Duration::from_secs(self.keep_alive),
-//                                                 &self.handle).ok();
-//                                             if let Some(timer) = timeout {
-//                                                 let timeout_fut = Loop::<I,P>::make_timeout(
-//                                                     timer, TimeoutType::Ping(id));
-//                                                 self.sources.push(timeout_fut);
-//                                             }
-//                                         },
-//                                         _ => {}
-//                                     }
-//                                     self.sources.push(Box::new(RequestProcessor::new(
-//                                         (packet, return_chan),
-//                                         self.data.clone())));
-//                                     let _ = inital_ret.send(Ok(()));
-//                                     *current_state = LoopStatus::Connected;
-//                                 },
-//                                 Some(ClientRequest{ty: Disconnect(time), ret, ack}) => {
-//                                     // Start a timeout for the disconnect
-//                                     let hdl = self.handle.clone();
-//                                     let timeout = time.and_then(|t| {
-//                                         Timeout::new(Duration::from_secs(t), &hdl).ok()
-//                                     });
-//                                     if let Some(timer) = timeout {
-//                                         let timeout_fut = Loop::<I,P>::make_timeout(timer,
-//                                             TimeoutType::Disconnect);
-//                                         self.sources.push(timeout_fut);
-//                                         // Move state to Disconnecting
-//                                         *current_state = LoopStatus::Disconnecting(
-//                                             DisconnectState::Waiting, ret);
-//                                     } else {
-//                                         *current_state = LoopStatus::Disconnecting(
-//                                             DisconnectState::Sending, ret);
-//                                     }
-//                                 },
-//                                 Some(ClientRequest{ty: _, ret, ack}) => {
-//                                     let _ = ack.send(
-//                                         Err(ErrorKind::LoopStateError.into()));
-//                                     return Ok(Async::Ready(()));
-//                                 },
-//                                 None => {
-//                                     *current_state = LoopStatus::PendingError(
-//                                         ErrorKind::LoopCommsError.into());
-//                                 }
-//                             }
-//                         },
-//                         LoopStatus::PendingError(_) => {
-//                             let e = match mem::replace(current_state, LoopStatus::Done) {
-//                                 LoopStatus::PendingError(e) => e,
-//                                 _ => unreachable!()
-//                             };
-//                             if let Some(req) = request {
-//                                 let _ = req.ack.send(Err(e));
-//                             }
-//                             return Ok(Async::Ready(()));
-//                         },
-//                         _ => unreachable!()
-//                     };
-//                 },
-//                 Some(SourceItem::ProcessRequest(sent, more)) => {
-//                     self.inflight = more;
-//                     // Set the timeout flag
-//                     let id = self.timer_flag.take().map(|t| t + 1).unwrap_or(0);
-//                     self.timer_flag = Some(id);
-//                     // Make the timeout
-//                     let timeout = Timeout::new(Duration::from_secs(self.keep_alive),
-//                         &self.handle).ok();
-//                     if let Some(timer) = timeout {
-//                         let timeout_fut = Loop::<I,P>::make_timeout(timer, TimeoutType::Ping(id));
-//                         self.sources.push(timeout_fut);
-//                     }
-//                 },
-//                 Some(SourceItem::GotResponse(strm, packet)) => {
-//                     let mut current_state = &mut self.status;
-//                     match current_state {
-//                         &mut LoopStatus::Connected | &mut LoopStatus::Disconnecting(_, _) => {
-//                             if let Some(p) = packet {
-//                                 self.sources.push(Loop::<I, P>::response_wrapper(strm));
-//                                 self.sources.push(Box::new(ResponseProcessor::new(p,
-//                                     self.data.clone())));
-//                             } else {
-//                                 *current_state = LoopStatus::PendingError(
-//                                     ErrorKind::UnexpectedDisconnect.into())
-//                             }
-//                         },
-//                         _ => unreachable!()
-//                     }
-//                 },
-//                 Some(SourceItem::ProcessResponse(sent, work)) => {
-//                     let current_state = &mut self.status;
-//                     match current_state {
-//                         &mut LoopStatus::Connected => {
-//                             self.inflight = work;
-//                             if sent {
-//                                 self.timer_flag = None;
-//                             } else {
-//                                 // Set the timeout flag
-//                                 let id = self.timer_flag.take().map(|t| t + 1).unwrap_or(0);
-//                                 self.timer_flag = Some(id);
-//                                 // Make the timeout
-//                                 let timeout = Timeout::new(Duration::from_secs(self.keep_alive),
-//                                     &self.handle).ok();
-//                                 if let Some(timer) = timeout {
-//                                     let timeout_fut = Loop::<I,P>::make_timeout(timer, TimeoutType::Ping(id));
-//                                     self.sources.push(timeout_fut);
-//                                 }
-//                             }
-//                         },
-//                         &mut LoopStatus::Disconnecting(ref mut state, ret) => {
-//                             // Have we finished our work?
-//                             match state {
-//                                 DisconnectState::Waiting => {
-//                                     if work {
-//                                         if sent {
-//                                             self.timer_flag = None;
-//                                         } else {
-//                                             // Set the timeout flag
-//                                             let id = self.timer_flag.take().map(|t| t + 1).unwrap_or(0);
-//                                             self.timer_flag = Some(id);
-//                                             // Make the timeout
-//                                             let timeout = Timeout::new(Duration::from_secs(self.keep_alive),
-//                                                 &self.handle).ok();
-//                                             if let Some(timer) = timeout {
-//                                                 let timeout_fut = Loop::<I,P>::make_timeout(timer, TimeoutType::Ping(id));
-//                                                 self.sources.push(timeout_fut);
-//                                             }
-//                                         }
-//                                     } else {
-//                                         *state = DisconnectState::Sending;
-//                                     }
-//                                 },
-//                                 DisconnectState::
-//                             }
-//                         },
-//                         _ => unreachable!()
-//                     }
-//                 },
-//                 Some(SourceItem::Timeout(t)) => {
-//                     match t {
-//                         TimeoutType::Connect => {
-//                             let mut current_state = &mut self.status;
-//                             match *current_state {
-//                                 LoopStatus::Connecting(_) => {
-//                                     *current_state = LoopStatus::PendingError(
-//                                         ProtoErrorKind::ResponseTimeout(
-//                                             PacketType::Connect
-//                                         ).into()
-//                                     );
-//                                 },
-//                                 _ => {}
-//                             }
-//                         }
-//                         TimeoutType::Ping(id) => {
-//                             // Send a ping request if this timer is valid
-//                             if let Some(x) = self.timer_flag {
-//                                 if x == id {
-//                                     let req = MqttPacket::ping_req_packet();
-//                                     let (tx, rx) = channel::<Result<ClientReturn>>();
-//                                     self.sources.push(Box::new(RequestProcessor::new((req, tx),
-//                                         self.data.clone())));
-//                                     self.sources.push(rx
-//                                         .map(|_| SourceItem::GotPingResponse)
-//                                         .map_err(|_| SourceError::GotPingResponse).boxed()
-//                                     );
-//                                     self.timer_flag = None;
-//                                 }
-//                             }
-//                         },
-//                         TimeoutType::Disconnect => {
-//                             // Shutdown all the queue stuff
-//
-//                         }
-//                     }
-//                 },
-//                 Some(SourceItem::GotPingResponse) => {
-//                     // Set the timeout flag
-//                     let id = self.timer_flag.take().map(|t| t + 1).unwrap_or(0);
-//                     self.timer_flag = Some(id);
-//                     // Make the timeout
-//                     let timeout = Timeout::new(Duration::from_secs(self.keep_alive),
-//                         &self.handle).ok();
-//                     if let Some(timer) = timeout {
-//                         let timeout_fut = Loop::<I,P>::make_timeout(timer, TimeoutType::Ping(id));
-//                         self.sources.push(timeout_fut);
-//                     }
-//                 }
-//                 None => {}
-//             };
-//             return Ok(Async::NotReady);
-//         }
-//     }
-// }
+impl<'p, I, P> Future for Loop<'p, I, P> where I: AsyncRead + AsyncWrite + 'static,
+     P: 'p + Persistence, 'p: 'static {
+     type Item = ();
+     type Error = ();
+
+     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        loop {
+            if let LoopStatus::Done = self.status {
+                return Ok(Async::Ready(()))
+            }
+
+            let res = match self.sources.poll() {
+                Ok(Async::NotReady) => return Ok(Async::NotReady),
+                Ok(Async::Ready(r)) => r,
+                Err(e) => {
+                    // Close the connection to the server
+                    self.status = LoopStatus::PendingError(e.into());
+                    continue;
+                }
+            };
+            if let Some(ref mut sourceitem) = res {
+                return self.poll_queues(sourceitem);
+            }
+        }
+    }
+}
 
 enum LoopStatus<E> {
     // Loop is disconnected from the server
@@ -544,5 +566,5 @@ enum DisconnectState {
     // Sending the disconnect packet
     Sending,
     // Closing the connection
-    Closing
+    Closing,
 }

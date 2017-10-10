@@ -13,7 +13,7 @@ static CRC_4_MESSAGE: &'static str = "0x04 Connection Refused, bad user name or 
 static CRC_5_MESSAGE: &'static str = "0x05 Connection Refused, not authorized";
 
 bitflags! {
-    #[derive(Serialize, Deserialize)]
+    #[derive(Serialize, Deserialize, Default)]
     pub flags PacketFlags: u8 {
         const DUP  = 0b1000,
         const QOS2 = 0b0100,
@@ -50,7 +50,7 @@ impl PacketFlags {
 }
 
 bitflags! {
-    #[derive(Serialize, Deserialize)]
+    #[derive(Serialize, Deserialize, Default)]
     pub flags ConnFlags: u8 {
         const USERNAME    = 0b10000000,
         const PASSWORD    = 0b01000000,
