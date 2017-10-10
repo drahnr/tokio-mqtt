@@ -89,8 +89,8 @@ impl<'p, P> Future for PublishRecieveHandler<'p, P> where P: 'p + Persistence {
                     let key = match data.persistence.append(ser) {
                         Ok(k) => k,
                         Err(e) => {
-                            if let Some(s) = sender {
-                                let _ = s.send(Err(e).chain_err(|| ErrorKind::PersistenceError));
+                            if let Some(sender) = sender {
+                                let _ = sender.send(Err(e).chain_err(|| ErrorKind::PersistenceError));
                             }
                             return Err(ErrorKind::PersistenceError.into())
                         }

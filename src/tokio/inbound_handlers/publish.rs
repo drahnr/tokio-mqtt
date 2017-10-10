@@ -84,7 +84,7 @@ impl<'p, P> Future for PublishHandler<'p, P> where P: 'p + Persistence {
                         };
                         for &(ref filter, ref sender) in data.subscriptions.values() {
                             if filter.match_topic(&topic) {
-                                let _ = sender.send((topic.clone().into(), payload.clone()));
+                                let _ = sender.unbounded_send((topic.clone().into(), payload.clone()));
                             }
                         }
                     },
@@ -98,12 +98,12 @@ impl<'p, P> Future for PublishHandler<'p, P> where P: 'p + Persistence {
                         };
                         for &(ref filter, ref sender) in data.subscriptions.values() {
                             if filter.match_topic(&topic) {
-                                let _ = sender.send((topic.clone().into(), payload.clone()));
+                                let _ = sender.unbounded_send((topic.clone().into(), payload.clone()));
                             }
                         }
 
                         // Send back an acknowledgement
-                        requester.send(LoopRequest::Internal(MqttPacket::pub_ack_packet(*id)));
+                        requester.unbounded_send(LoopRequest::Internal(MqttPacket::pub_ack_packet(*id)));
                     },
                     QualityOfService::QoS2 => {
                         let id = packet.headers.get::<PacketId>().unwrap();
@@ -117,7 +117,7 @@ impl<'p, P> Future for PublishHandler<'p, P> where P: 'p + Persistence {
                         } else {
                             data.server_publish_state.insert(*id, PublishState::Received(packet));
                             // Send PUBREC
-                            requester.send(LoopRequest::Internal(MqttPacket::pub_rec_packet(*id)));
+                            requester.unbounded_send(LoopRequest::Internal(MqttPacket::pub_rec_packet(*id)));
                         }
                     }
                 }

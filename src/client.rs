@@ -221,7 +221,22 @@ impl<P> Client<P> where P: Persistence {
     /// If you specified an encoder, `msg` will be whatever type you specified as `Encoder::Item`.
     /// The returned future will error if the encoding fails.
     pub fn publish(&mut self, topic: String, qos: QualityOfService, retain: bool, msg: Bytes) -> BoxMqttFuture<()> {
-        unimplemented!()
+        let topic = MqttString::from_str_lossy(topic.as_str());
+        let flags : PacketFlags = match qos {
+            QualityOfService::QoS2 => QOS2,
+            QualityOfService::QoS1 => QOS1,
+            _ => PacketFlags::default(),
+        };
+        let flags = if retain {
+            flags | RET
+        } else {
+            flags
+        };
+
+        let id = 777; // FIXME ever increasing with rollover
+        let connect = MqttPacket::publish_packet(flags, topic, id, msg);
+        // Send packet
+        self.request(connect)
     }
 
     /// Subscribe to a particular topic filter. This returns a Future which resolves to a `Stream`

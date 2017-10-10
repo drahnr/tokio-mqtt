@@ -89,11 +89,11 @@ impl<'p, P> Future for PublishReleaseHandler<'p, P> where P: 'p + Persistence {
                     };
                     for &(ref filter, ref sender) in data.subscriptions.values() {
                         if filter.match_topic(&topic) {
-                            let _ = sender.send((topic.clone().into(), payload.clone()));
+                            let _ = sender.unbounded_send((topic.clone().into(), payload.clone()));
                         }
                     }
 
-                    requester.send(LoopRequest::Internal(MqttPacket::pub_comp_packet(*id)));
+                    let _ = requester.unbounded_send(LoopRequest::Internal(MqttPacket::pub_comp_packet(*id)));
                 } else {
                     return Err(ProtoErrorKind::UnexpectedResponse(packet.ty.clone()).into())
                 }
