@@ -36,7 +36,7 @@ use ::tokio::{
 };
 
 pub fn publish_ack_handler<'p, P>(packet: MqttPacket, data_lock: FutMutex<LoopData<'p, P>>) ->
-    Box<Future<Item=(), Error=Error> + 'p> where P: 'p + Persistence {
+    Box<Future<Item=(), Error=Error> + 'p + Send> where P: 'p + Send + Persistence {
 
     Box::new(poll_fn(move || {
         let mut data = match data_lock.poll_lock() {

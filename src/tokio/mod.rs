@@ -21,7 +21,7 @@ use ::proto::{MqttPacket, QualityOfService};
 use ::types::{SubscriptionStream, SubItem};
 use ::persistence::Persistence;
 
-type BoxFuture<T, E> = Box<Future<Item = T,Error = E>>;
+type BoxFuture<T, E> = Box<Future<Item = T,Error = E> + Send + 'static>;
 
 type RequestTuple = (MqttPacket, Sender<Result<ClientReturn>>);
 type MqttFramedReader<I> = SplitStream<Framed<I, MqttCodec>>;
@@ -70,7 +70,7 @@ pub enum TimeoutType {
 /// These types act like tagged future items/errors, allowing the loop to know which future has
 /// returned. This simplifies the process of handling sources.
 pub enum SourceItem<I> {
-    GotResponse(MqttFramedReader<I>, Option<MqttPacket>),
+    Received(MqttFramedReader<I>, Option<MqttPacket>),
     ProcessResponse(bool, bool),
     GotRequest(ClientQueue, Option<ClientRequest>),
     ProcessRequest(bool, bool),
@@ -79,7 +79,7 @@ pub enum SourceItem<I> {
 }
 
 pub enum SourceError<I> {
-    GotResponse(MqttFramedReader<I>, Error),
+    Received(MqttFramedReader<I>, Error),
     ProcessResponse(Error),
     GotRequest(ClientQueue, Error),
     ProcessRequest(Error),
@@ -90,7 +90,7 @@ pub enum SourceError<I> {
 impl<I> From<SourceError<I>> for Error {
     fn from(val: SourceError<I>) -> Error {
         match val {
-            SourceError::GotResponse(_, e) => e,
+            SourceError::Received(_, e) => e,
             SourceError::ProcessResponse(e) => e,
             SourceError::GotRequest(_, e) => e,
             SourceError::ProcessRequest(e) => e,

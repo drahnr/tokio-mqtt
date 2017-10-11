@@ -21,12 +21,12 @@ enum State {
     Done
 }
 
-pub struct PublishHandler<'p, P> where P: 'p + Persistence {
+pub struct PublishHandler<'p, P> where P: 'p + Send + Persistence {
     data_lock: FutMutex<LoopData<'p, P>>,
     state: Option<State>
 }
 
-impl<'p, P> PublishHandler<'p, P> where P: 'p + Persistence {
+impl<'p, P> PublishHandler<'p, P> where P: 'p + Send + Persistence {
     pub fn new((packet, client): RequestTuple, data_lock: FutMutex<LoopData<'p, P>>) ->
         PublishHandler<'p, P> {
 
@@ -37,7 +37,7 @@ impl<'p, P> PublishHandler<'p, P> where P: 'p + Persistence {
     }
 }
 
-impl<'p, P> Future for PublishHandler<'p, P> where P: 'p + Persistence {
+impl<'p, P> Future for PublishHandler<'p, P> where P: 'p + Send + Persistence {
     type Item = ();
     type Error = Error;
 

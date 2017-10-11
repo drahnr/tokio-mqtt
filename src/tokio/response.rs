@@ -29,7 +29,7 @@ enum State<'p> {
 
 /// This type will take a packet from the server and process it, returning the stream it came from
 pub struct ResponseProcessor<'p, I, P>
-    where I: AsyncRead + AsyncWrite + 'static, P: 'p + Persistence {
+    where I: AsyncRead + AsyncWrite + 'static, P: 'p + Send + Persistence {
     state: Option<State<'p>>,
     stream: MqttFramedReader<I>,
     req_chan: UnboundedSender<LoopRequest>,
@@ -37,7 +37,7 @@ pub struct ResponseProcessor<'p, I, P>
 }
 
 impl<'p, I, P> ResponseProcessor<'p, I, P>
-    where I: AsyncRead + AsyncWrite + 'static, P: 'p + Persistence {
+    where I: AsyncRead + AsyncWrite + 'static, P: 'p + Send + Persistence {
     pub fn new(packet: MqttPacket, stream: MqttFramedReader<I>,
         req_chan: UnboundedSender<LoopRequest>, data_lock: FutMutex<LoopData<'p, P>>) ->
         ResponseProcessor<'p, I, P> {
@@ -87,7 +87,7 @@ impl<'p, I, P> ResponseProcessor<'p, I, P>
 }
 
 impl<'p, I, P> Future for ResponseProcessor<'p, I, P>
-    where I: AsyncRead + AsyncWrite + 'static, P: 'p + Persistence {
+    where I: AsyncRead + AsyncWrite + 'static, P: 'p + Send + Persistence {
     type Item = ();
     type Error = Error;
 

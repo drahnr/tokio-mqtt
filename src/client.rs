@@ -3,7 +3,9 @@ use std::default::Default;
 use ::tokio_core::reactor::Handle;
 use ::tokio_io::{AsyncRead, AsyncWrite};
 use ::futures::Future;
+use ::futures::future::IntoFuture;
 use ::futures::stream::Stream;
+use ::futures::future::result;
 use ::bytes::{Bytes};
 use ::proto::*;
 use ::types::{BoxMqttFuture, SubscriptionStream as SubStream};
@@ -112,7 +114,7 @@ pub struct Client<P> where P: Persistence {
     persistence: P
 }
 
-impl<P> Client<P> where P: Persistence {
+impl<P> Client<P> where P: Persistence+Send {
     /// Return an empty configuration object. See `ClientConfig` for instructions on how to use.
     pub fn config() -> ClientConfig {
         ClientConfig::new()
@@ -152,7 +154,7 @@ impl<P> Client<P> where P: Persistence {
     ///
     /// `config` provides options to configure the client.
     pub fn connect<'p, I>(&'p mut self, io: I, cfg: &ClientConfig) -> MqttResult<Option<SubStream>>
-    where I: AsyncRead + AsyncWrite + 'static, P: Persistence {
+    where I: AsyncRead + AsyncWrite + Send + 'static, P: Persistence {
         // Setup a continual loop. This loop handles all the nitty gritty of reciving and
         // dispatching packets from the server. It essentially multiplexes packets to the correct
         // destination. Designed to run constantly on a Core loop, unless an error occurs.
@@ -238,9 +240,9 @@ impl<P> Client<P> where P: Persistence {
             // prepare packet
             let connect = MqttPacket::publish_packet(flags, topic, id, msg);
             // Send packet
-            client.request(connect).unwrap() // FIXME
+            client.request(connect).into_future().map(|_|()).boxed()
         } else {
-            bail!(ErrorKind::NotConnected);
+            Box::new(result::<_, _>(Err(ErrorKind::NotConnected.into())))
         }
     }
 

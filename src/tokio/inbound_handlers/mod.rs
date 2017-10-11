@@ -22,7 +22,7 @@ pub struct ResponseHandler<'p> {
 
 impl<'p> ResponseHandler<'p> {
     pub fn new<P>(packet: MqttPacket, requester: UnboundedSender<LoopRequest>,
-        data_lock: FutMutex<LoopData<'p, P>>) -> ResponseHandler<'p> where P: 'p + Persistence {
+        data_lock: FutMutex<LoopData<'p, P>>) -> ResponseHandler<'p> where P: 'p + Send + Persistence {
 
         use ::proto::PacketType::*;
 

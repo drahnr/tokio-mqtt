@@ -10,7 +10,7 @@ use ::tokio::mqtt_loop::LoopData;
 use ::tokio::{PublishState, ClientReturn};
 
 pub fn publish_complete_handler<'p, P>(packet: MqttPacket, data_lock: FutMutex<LoopData<'p, P>>) ->
-    Box<Future<Item=(), Error=Error> + 'p> where P: 'p + Persistence {
+    Box<Future<Item=(), Error=Error> + 'p> where P: 'p + Send + Persistence {
 
     Box::new(poll_fn(move || {
         let mut data = match data_lock.poll_lock() {

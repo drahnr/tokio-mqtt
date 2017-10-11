@@ -19,7 +19,7 @@ enum State<'p> {
 }
 
 pub struct RequestProcessor<'p, I, P>
-    where I: AsyncRead + AsyncWrite + 'static, P: 'p + Persistence, 'p: 'static {
+    where I: AsyncRead + AsyncWrite + 'static, P: 'p + Send + Persistence, 'p: 'static {
     state: Option<State<'p>>,
     req_queue: UnboundedReceiver<LoopRequest>,
     data_lock: FutMutex<LoopData<'p, P>>,
@@ -27,7 +27,8 @@ pub struct RequestProcessor<'p, I, P>
 }
 
 impl<'p, I, P> RequestProcessor<'p, I, P>
-    where I: AsyncRead + AsyncWrite, P: 'p + Persistence, 'p: 'static {
+    where I: AsyncRead + AsyncWrite, P: 'p + Send + Persistence, 'p: 'static {
+
     pub fn new(req_queue: UnboundedReceiver<LoopRequest>, writer: MqttFramedWriter<I>,
         data_lock: FutMutex<LoopData<'p, P>>) -> RequestProcessor<'p, I, P> {
 
@@ -41,7 +42,7 @@ impl<'p, I, P> RequestProcessor<'p, I, P>
 }
 
 impl<'p, I, P> Future for RequestProcessor<'p, I, P>
-    where I: AsyncRead + AsyncWrite, P: 'p + Persistence, 'p: 'static {
+    where I: AsyncRead + AsyncWrite, P: 'p + Send + Persistence, 'p: 'static {
     type Item = ();
     type Error = Error;
 

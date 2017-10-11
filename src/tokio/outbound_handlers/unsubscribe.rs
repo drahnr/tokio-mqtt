@@ -13,12 +13,12 @@ enum State {
     Done
 }
 
-pub struct UnsubscribeHandler<'p, P> where P: 'p + Persistence {
+pub struct UnsubscribeHandler<'p, P> where P: 'p + Send + Persistence {
     data_lock: FutMutex<LoopData<'p, P>>,
     state: Option<State>
 }
 
-impl<'p, P> UnsubscribeHandler<'p, P> where P: 'p + Persistence {
+impl<'p, P> UnsubscribeHandler<'p, P> where P: 'p + Send + Persistence {
     pub fn new((packet, client): RequestTuple, data_lock: FutMutex<LoopData<'p, P>>) ->
         UnsubscribeHandler<'p, P> {
 
@@ -29,7 +29,7 @@ impl<'p, P> UnsubscribeHandler<'p, P> where P: 'p + Persistence {
     }
 }
 
-impl<'p, P> Future for UnsubscribeHandler<'p, P> where P: 'p + Persistence {
+impl<'p, P> Future for UnsubscribeHandler<'p, P> where P: 'p + Send + Persistence {
     type Item = ();
     type Error = Error;
 

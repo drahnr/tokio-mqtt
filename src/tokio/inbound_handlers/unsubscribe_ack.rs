@@ -38,12 +38,12 @@ enum State {
     Done
 }
 
-pub struct UnsubscribeAckHandler<'p, P> where P: 'p + Persistence {
+pub struct UnsubscribeAckHandler<'p, P> where P: 'p + Send + Persistence {
     data_lock: FutMutex<LoopData<'p, P>>,
     state: Option<State>
 }
 
-impl<'p, P> UnsubscribeAckHandler<'p, P> where P: 'p + Persistence {
+impl<'p, P> UnsubscribeAckHandler<'p, P> where P: 'p + Send + Persistence {
     pub fn new(packet: MqttPacket, data_lock: FutMutex<LoopData<'p, P>>) ->
         UnsubscribeAckHandler<'p, P> {
 
@@ -54,7 +54,7 @@ impl<'p, P> UnsubscribeAckHandler<'p, P> where P: 'p + Persistence {
     }
 }
 
-impl<'p, P> Future for UnsubscribeAckHandler<'p, P> where P: 'p + Persistence {
+impl<'p, P> Future for UnsubscribeAckHandler<'p, P> where P: 'p + Send + Persistence {
     type Item = ();
     type Error = Error;
 

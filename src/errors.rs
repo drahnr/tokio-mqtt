@@ -1,4 +1,5 @@
 use std;
+use futures;
 
 error_chain! {
     links {
@@ -7,6 +8,7 @@ error_chain! {
 
     foreign_links {
         Io(std::io::Error);
+        Canceled(futures::sync::oneshot::Canceled);
     }
 
     errors {

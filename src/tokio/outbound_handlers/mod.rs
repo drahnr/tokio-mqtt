@@ -11,16 +11,16 @@ use ::persistence::Persistence;
 use ::errors::Error;
 
 pub struct RequestHandler<'p> {
-    inner: Box<Future<Item=(), Error=Error> + 'p>
+    inner: Box<Future<Item=(), Error=Error> + 'p + Send>
 }
 
 impl<'p> RequestHandler<'p> {
     pub fn new<P>((packet, client): RequestTuple, data_lock: FutMutex<LoopData<'p, P>>) ->
-        RequestHandler where P: 'p + Persistence {
+        RequestHandler where P: 'p + Send + Persistence {
 
         use ::proto::PacketType::*;
 
-        let inner: Box<Future<Item=(), Error=Error> + 'p> = match packet.ty {
+        let inner: Box<Future<Item=(), Error=Error> + 'p + Send> = match packet.ty {
             PingReq => Box::new(ping_request::PingRequestHandler::new((packet, client), data_lock)),
             Publish => Box::new(publish::PublishHandler::new((packet, client), data_lock)),
             Subscribe => Box::new(subscribe::SubscribeHandler::new((packet, client), data_lock)),
