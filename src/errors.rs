@@ -73,7 +73,7 @@ impl From<self::proto::ErrorKind> for Error {
 }
 
 pub mod proto {
-    use ::proto::{PacketType, ConnRetCode, QualityOfService};
+    use proto::{PacketType, ConnRetCode, QualityOfService};
     error_chain!{
         errors {
             ResponseTimeout(p: PacketType) {
